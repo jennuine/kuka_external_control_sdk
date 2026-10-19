@@ -73,6 +73,9 @@ private:
   // Start keep-alive thread
   void StartKeepAliveThread();
 
+  // One keep-alive cycle of the dispatcher start and the RSI start command
+  void HandleRsiStart();
+
   std::optional<int> CheckRosRuntimeVersion(mxAWrapper::VersionResult & version_result);
 
   // UDP communication
@@ -111,6 +114,8 @@ private:
 
   std::atomic<bool> start_cmd_dispatcher_{false};
   std::atomic<bool> start_rsi_{false};
+  std::atomic<int> rsi_start_retries_{0};
+  static constexpr int kMaxRsiStartRetries = 3;
   std::atomic<bool> rsi_started_{false};
   std::atomic<bool> rsi_started_notification_sent_{false};
   std::atomic<bool> connected_notification_sent_{false};

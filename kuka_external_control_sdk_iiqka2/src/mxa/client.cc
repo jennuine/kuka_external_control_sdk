@@ -97,6 +97,7 @@ Status Client::StartRSI(ControlMode control_mode, CycleTime cycle_time)
   control_mode_ = control_mode;
   cycle_time_ = cycle_time;
   rsi_started_notification_sent_ = false;
+  rsi_start_retries_ = 0;
   rsi_started_ = true;
 
   return event_handler_set_
@@ -298,33 +299,7 @@ void Client::StartKeepAliveThread()
           }
 
           // ----------------------------------------------------------------------------
-          // AutoStart - sets existing signals of AutomaticExternal in the correct
-          // sequence - used to activate AutExt block easier...
-          if (start_cmd_dispatcher_)
-          {
-            auto result = mxa_wrapper_.startMxAServer();
-            if (result.block_state == BLOCKSTATE::DONE)
-            {
-              start_cmd_dispatcher_ = false;
-            }
-          }
-
-          // Call program starting RSI
-          if (mxa_wrapper_.isServerActive() && start_rsi_)
-          {
-            auto process_rsi_res = mxa_wrapper_.processRSI(
-              static_cast<int>(control_mode_), static_cast<int>(cycle_time_));
-            if (
-              process_rsi_res.block_state == BLOCKSTATE::ACTIVE && !rsi_started_notification_sent_)
-            {
-              rsi_started_notification_sent_ = true;
-              event_handler_->OnSampling();
-            }
-            if (process_rsi_res.block_state == BLOCKSTATE::DONE)
-            {
-              start_rsi_ = false;
-            }
-          }
+          HandleRsiStart();
           // ----------------------------------------------------------------------------
           if (cancel_requested_)
           {
@@ -369,6 +344,64 @@ void Client::StartKeepAliveThread()
         }
       }
     });
+}
+
+void Client::HandleRsiStart()
+{
+  // AutoStart - sets existing signals of AutomaticExternal in the correct
+  // sequence - used to activate AutExt block easier...
+  if (start_cmd_dispatcher_)
+  {
+    auto result = mxa_wrapper_.startMxAServer();
+    if (result.block_state != BLOCKSTATE::DONE)
+    {
+      return;
+    }
+    start_cmd_dispatcher_ = false;
+    // New rising edge for the start command, the flag may be left set by a cancel
+    mxa_wrapper_.resetRSI();
+  }
+
+  // Call program starting RSI, once the dispatcher is up
+  if (!mxa_wrapper_.isServerActive() || !start_rsi_)
+  {
+    return;
+  }
+
+  auto process_rsi_res =
+    mxa_wrapper_.processRSI(static_cast<int>(control_mode_), static_cast<int>(cycle_time_));
+  switch (process_rsi_res.block_state)
+  {
+    case BLOCKSTATE::ACTIVE:
+      if (!rsi_started_notification_sent_)
+      {
+        rsi_started_notification_sent_ = true;
+        event_handler_->OnSampling();
+      }
+      break;
+    case BLOCKSTATE::DONE:
+      start_rsi_ = false;
+      break;
+    case BLOCKSTATE::ABORTED:
+    case BLOCKSTATE::ERROR:
+      // The execute flag is already dropped, the next cycle re-issues the command
+      if (rsi_start_retries_ < kMaxRsiStartRetries)
+      {
+        rsi_start_retries_++;
+        break;
+      }
+      start_rsi_ = false;
+      {
+        const std::string reason =
+          process_rsi_res.block_state == BLOCKSTATE::ABORTED
+            ? "aborted by the KRC"
+            : "failed with error ID " + std::to_string(process_rsi_res.error_code);
+        event_handler_->OnError(
+          "RSI start command " + reason + " after " + std::to_string(kMaxRsiStartRetries) +
+          " retries");
+      }
+      break;
+  }
 }
 
 }  // namespace kuka::external::control::kss::mxa
