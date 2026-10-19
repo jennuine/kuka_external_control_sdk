@@ -47,8 +47,13 @@ class MxaRsiStart : public ::testing::Test
 protected:
   static constexpr int kAxisGroup = 1;
   static constexpr int kTechFunctionCmdId = 35;
+  static constexpr int kOrderStateActive = 5;
   static constexpr int kOrderStateDone = 6;
   static constexpr int kOrderStateAborted = 8;
+  // Enough cycles for one re-issue after a reported abort
+  static constexpr int kBackoff = Client::kRsiStartBackoffCycles + 5;
+  // Enough cycles for one re-issue after a silent drop
+  static constexpr int kTimeout = Client::kRsiStartAckTimeoutCycles + kBackoff;
 
   void SetUp() override
   {
@@ -146,7 +151,9 @@ TEST_F(MxaRsiStart, AbortedStartIsReissuedOnce)
   ASSERT_EQ(issued_.size(), 1u);
 
   ReportOrderState(issued_[0], kOrderStateAborted);
-  Cycles(50);
+  Cycles(Client::kRsiStartBackoffCycles - 5);
+  EXPECT_EQ(issued_.size(), 1u) << "re-issued inside the backoff";
+  Cycles(10);
 
   ASSERT_EQ(issued_.size(), 2u);
   EXPECT_EQ(issued_[1], issued_[0] + 1);
@@ -154,16 +161,74 @@ TEST_F(MxaRsiStart, AbortedStartIsReissuedOnce)
   EXPECT_TRUE(handler_->errors.empty());
 }
 
+TEST_F(MxaRsiStart, UnacknowledgedStartIsTimedOutAndReissued)
+{
+  StartRsi();
+  Cycles(5);
+  ASSERT_EQ(issued_.size(), 1u);
+
+  // The KRC never reports the order: no ACTIVE, no DONE, no ABORTED
+  Cycles(Client::kRsiStartAckTimeoutCycles - 10);
+  EXPECT_EQ(issued_.size(), 1u) << "timed out early";
+  Cycles(kBackoff + 10);
+
+  ASSERT_EQ(issued_.size(), 2u);
+  EXPECT_EQ(issued_[1], issued_[0] + 1);
+  EXPECT_TRUE(client_.start_rsi_);
+  EXPECT_TRUE(handler_->errors.empty());
+}
+
+TEST_F(MxaRsiStart, ConfirmedStartIsNeverTimedOut)
+{
+  StartRsi();
+  Cycles(5);
+  ASSERT_EQ(issued_.size(), 1u);
+
+  // RSI packets arrive; the KRC still never reports the order
+  client_.ConfirmRsiStart();
+  Cycles(kTimeout * (Client::kMaxRsiStartRetries + 2));
+
+  EXPECT_EQ(issued_.size(), 1u);
+  EXPECT_TRUE(client_.start_rsi_);
+  EXPECT_TRUE(handler_->errors.empty());
+}
+
+TEST_F(MxaRsiStart, AcknowledgedStartIsNotTimedOut)
+{
+  StartRsi();
+  Cycles(5);
+  ASSERT_EQ(issued_.size(), 1u);
+
+  ReportOrderState(issued_[0], kOrderStateActive);
+  Cycles(kTimeout + 50);
+
+  EXPECT_EQ(issued_.size(), 1u);
+  EXPECT_TRUE(client_.start_rsi_);
+  EXPECT_EQ(handler_->sampling_count, 1);
+  EXPECT_TRUE(handler_->errors.empty());
+}
+
+TEST_F(MxaRsiStart, GivesUpAfterSilentDrops)
+{
+  StartRsi();
+  Cycles(kTimeout * (Client::kMaxRsiStartRetries + 1));
+
+  EXPECT_EQ(issued_.size(), static_cast<size_t>(Client::kMaxRsiStartRetries + 1));
+  EXPECT_FALSE(client_.start_rsi_);
+  ASSERT_EQ(handler_->errors.size(), 1u);
+  EXPECT_NE(handler_->errors[0].find("not acknowledged"), std::string::npos);
+}
+
 TEST_F(MxaRsiStart, GivesUpAfterTheRetryCap)
 {
   StartRsi();
   for (int attempt = 0; attempt <= Client::kMaxRsiStartRetries; attempt++)
   {
-    Cycles(5);
+    Cycles(kBackoff);
     ASSERT_EQ(issued_.size(), static_cast<size_t>(attempt + 1));
     ReportOrderState(issued_.back(), kOrderStateAborted);
   }
-  Cycles(50);
+  Cycles(kBackoff);
 
   EXPECT_EQ(issued_.size(), static_cast<size_t>(Client::kMaxRsiStartRetries + 1));
   EXPECT_FALSE(client_.start_rsi_);

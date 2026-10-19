@@ -98,6 +98,9 @@ Status Client::StartRSI(ControlMode control_mode, CycleTime cycle_time)
   cycle_time_ = cycle_time;
   rsi_started_notification_sent_ = false;
   rsi_start_retries_ = 0;
+  rsi_start_hold_cycles_ = 0;
+  rsi_start_pending_cycles_ = 0;
+  rsi_start_confirmed_ = false;
   rsi_started_ = true;
 
   return event_handler_set_
@@ -136,6 +139,15 @@ void Client::ResetRSI()
   rsi_started_ = false;
   start_cmd_dispatcher_ = false;
   start_rsi_ = false;
+  rsi_start_hold_cycles_ = 0;
+  rsi_start_pending_cycles_ = 0;
+  rsi_start_confirmed_ = false;
+}
+
+void Client::ConfirmRsiStart()
+{
+  rsi_start_confirmed_ = true;
+  rsi_start_pending_cycles_ = 0;
 }
 
 void Client::TurnOnDrives() { mxa_wrapper_.drivesOn(); }
@@ -368,6 +380,13 @@ void Client::HandleRsiStart()
     return;
   }
 
+  // No edge until the backoff after a failed attempt has run out
+  if (rsi_start_hold_cycles_ > 0)
+  {
+    rsi_start_hold_cycles_--;
+    return;
+  }
+
   auto process_rsi_res =
     mxa_wrapper_.processRSI(static_cast<int>(control_mode_), static_cast<int>(cycle_time_));
   switch (process_rsi_res.block_state)
@@ -378,30 +397,46 @@ void Client::HandleRsiStart()
         rsi_started_notification_sent_ = true;
         event_handler_->OnSampling();
       }
+      if (rsi_start_confirmed_ || !mxa_wrapper_.rsiStartUnacknowledged())
+      {
+        rsi_start_pending_cycles_ = 0;
+        break;
+      }
+      if (++rsi_start_pending_cycles_ < kRsiStartAckTimeoutCycles)
+      {
+        break;
+      }
+      // Dropped without a report: drop the edge ourselves and retry
+      mxa_wrapper_.resetRSI();
+      RetryRsiStart("not acknowledged by the KRC");
       break;
     case BLOCKSTATE::DONE:
       start_rsi_ = false;
+      rsi_start_pending_cycles_ = 0;
       break;
     case BLOCKSTATE::ABORTED:
+      RetryRsiStart("aborted by the KRC");
+      break;
     case BLOCKSTATE::ERROR:
-      // The execute flag is already dropped, the next cycle re-issues the command
-      if (rsi_start_retries_ < kMaxRsiStartRetries)
-      {
-        rsi_start_retries_++;
-        break;
-      }
-      start_rsi_ = false;
-      {
-        const std::string reason =
-          process_rsi_res.block_state == BLOCKSTATE::ABORTED
-            ? "aborted by the KRC"
-            : "failed with error ID " + std::to_string(process_rsi_res.error_code);
-        event_handler_->OnError(
-          "RSI start command " + reason + " after " + std::to_string(kMaxRsiStartRetries) +
-          " retries");
-      }
+      RetryRsiStart("failed with error ID " + std::to_string(process_rsi_res.error_code));
       break;
   }
+}
+
+// The execute flag is already dropped; the next edge is raised after the backoff
+void Client::RetryRsiStart(const std::string & reason)
+{
+  rsi_start_pending_cycles_ = 0;
+  if (rsi_start_retries_ < kMaxRsiStartRetries)
+  {
+    rsi_start_retries_++;
+    rsi_start_hold_cycles_ = kRsiStartBackoffCycles;
+    return;
+  }
+  start_rsi_ = false;
+  event_handler_->OnError(
+    "RSI start command " + reason + " after " + std::to_string(kMaxRsiStartRetries) +
+    " retries");
 }
 
 }  // namespace kuka::external::control::kss::mxa

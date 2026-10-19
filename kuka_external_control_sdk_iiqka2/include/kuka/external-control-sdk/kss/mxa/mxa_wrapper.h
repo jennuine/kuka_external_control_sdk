@@ -280,6 +280,15 @@ public:
 
   bool isServerActive() const { return mxa_aut_ext_.PRO_ACT; }
 
+  // The start command was sent and the KRC has not reported it running. A
+  // command the dispatcher drops during its restart is left in this state
+  // without an ABORTED, so nothing on the KRC side ever ends it
+  bool rsiStartUnacknowledged() const
+  {
+    return mxa_tech_function_m_.BUSY && !mxa_tech_function_m_.ACTIVE &&
+           !mxa_tech_function_m_.DONE && !mxa_tech_function_m_.ABORTED;
+  }
+
   bool drivesPowered() const { return mxa_aut_ext_.PERI_RDY; }
 
   bool emergencyStop() const { return !mxa_aut_ext_.ALARM_STOP; }
