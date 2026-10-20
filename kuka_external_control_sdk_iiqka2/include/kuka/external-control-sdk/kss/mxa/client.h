@@ -56,6 +56,10 @@ public:
   // Reset class to be able to start RSI again
   void ResetRSI();
 
+  // Marks the start as taken. The first RSI packet is the only report of a
+  // successful start, so this is what disarms the start timeout
+  void ConfirmRsiStart();
+
   // Turn on drives
   void TurnOnDrives();
 
@@ -78,14 +82,6 @@ private:
 
   // Count a failed start attempt: re-issue after the backoff, or report
   void RetryRsiStart(const std::string & reason);
-
-public:
-  // The first RSI packet is the only proof the start took: the KRC does not
-  // report a successful tech function start as ACTIVE or DONE, so without this
-  // a running start looks identical to one the dispatcher dropped
-  void ConfirmRsiStart();
-
-private:
 
   std::optional<int> CheckRosRuntimeVersion(mxAWrapper::VersionResult & version_result);
 
@@ -127,15 +123,10 @@ private:
   std::atomic<bool> start_rsi_{false};
   std::atomic<int> rsi_start_retries_{0};
   static constexpr int kMaxRsiStartRetries = 3;
-  // Cycles are keep-alive cycles, one per mxA status packet, about 4 ms apart.
-  // A start re-issued inside the dispatcher's restart window is dropped like
-  // the first (seen at +29 ms; +811 ms was accepted), so wait it out first
+  // Both counts are keep-alive cycles, one per mxA status packet, about 4 ms
+  // Wait after a failed attempt, so the re-issue clears the dispatcher restart
   static constexpr int kRsiStartBackoffCycles = 100;
-  // A dropped command is never reported ABORTED; time it out from here. An
-  // accepted start has delivered its first RSI packet within about 1 s on the
-  // r930, so 2 s is clear of that. One silent drop and its re-issue fit inside
-  // the driver's 5 s first read; the cap of three mostly matters for the
-  // cheaper reported aborts
+  // A start neither reported nor confirmed by then counts as a dropped attempt
   static constexpr int kRsiStartAckTimeoutCycles = 500;
   std::atomic<int> rsi_start_hold_cycles_{0};
   std::atomic<int> rsi_start_pending_cycles_{0};

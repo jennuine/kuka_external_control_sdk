@@ -280,9 +280,8 @@ public:
 
   bool isServerActive() const { return mxa_aut_ext_.PRO_ACT; }
 
-  // The start command was sent and the KRC has not reported it running. A
-  // command the dispatcher drops during its restart is left in this state
-  // without an ABORTED, so nothing on the KRC side ever ends it
+  // The start command was echoed by the KRC, but no order state was reported.
+  // A command the dispatcher drops stays here without an ABORTED
   bool rsiStartUnacknowledged() const
   {
     return mxa_tech_function_m_.BUSY && !mxa_tech_function_m_.ACTIVE &&

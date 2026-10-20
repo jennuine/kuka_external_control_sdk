@@ -77,7 +77,8 @@ Status Robot::SendControlSignal()
 
 Status Robot::ReceiveMotionState(std::chrono::milliseconds receive_request_timeout)
 {
-  Status ret = kuka::external::control::kss::rsi::Robot::ReceiveMotionState(receive_request_timeout);
+  Status ret =
+    kuka::external::control::kss::rsi::Robot::ReceiveMotionState(receive_request_timeout);
   if (ret.return_code == ReturnCode::OK)
   {
     client_.ConfirmRsiStart();
