@@ -90,10 +90,6 @@ Status Client::RegisterEventHandler(std::unique_ptr<EventHandler> && event_handl
 
 Status Client::StartRSI(ControlMode control_mode, CycleTime cycle_time)
 {
-  // Start CMD dispatcher on first start
-  start_cmd_dispatcher_ = true;
-  start_rsi_ = true;
-
   control_mode_ = control_mode;
   cycle_time_ = cycle_time;
   rsi_started_notification_sent_ = false;
@@ -102,6 +98,11 @@ Status Client::StartRSI(ControlMode control_mode, CycleTime cycle_time)
   rsi_start_pending_cycles_ = 0;
   rsi_start_confirmed_ = false;
   rsi_started_ = true;
+
+  // Start CMD dispatcher on first start. The keep-alive thread acts on these
+  // flags, so they are set after the counters above are reset
+  start_cmd_dispatcher_ = true;
+  start_rsi_ = true;
 
   return event_handler_set_
            ? Status{ReturnCode::OK, "RSI program start requested"}
@@ -146,6 +147,10 @@ void Client::ResetRSI()
 
 void Client::ConfirmRsiStart()
 {
+  if (rsi_start_confirmed_)
+  {
+    return;
+  }
   rsi_start_confirmed_ = true;
   rsi_start_pending_cycles_ = 0;
 }
@@ -402,7 +407,9 @@ void Client::HandleRsiStart()
         rsi_start_pending_cycles_ = 0;
         break;
       }
-      if (++rsi_start_pending_cycles_ < kRsiStartAckTimeoutCycles)
+      // The confirmation comes from another thread, so check it again before
+      // acting on the count
+      if (++rsi_start_pending_cycles_ < kRsiStartAckTimeoutCycles || rsi_start_confirmed_)
       {
         break;
       }
@@ -435,8 +442,7 @@ void Client::RetryRsiStart(const std::string & reason)
   }
   start_rsi_ = false;
   event_handler_->OnError(
-    "RSI start command " + reason + " after " + std::to_string(kMaxRsiStartRetries) +
-    " retries");
+    "RSI start command " + reason + " after " + std::to_string(kMaxRsiStartRetries) + " retries");
 }
 
 }  // namespace kuka::external::control::kss::mxa

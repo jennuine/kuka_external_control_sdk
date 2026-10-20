@@ -193,6 +193,24 @@ TEST_F(MxaRsiStart, ConfirmedStartIsNeverTimedOut)
   EXPECT_TRUE(handler_->errors.empty());
 }
 
+TEST_F(MxaRsiStart, ConfirmationDoesNotCarryOverToTheNextStart)
+{
+  StartRsi();
+  Cycles(5);
+  client_.ConfirmRsiStart();
+  Cycles(kTimeout);
+  ASSERT_EQ(issued_.size(), 1u);
+  client_.ResetRSI();
+
+  StartRsi();
+  Cycles(5);
+  ASSERT_EQ(issued_.size(), 2u);
+  Cycles(kTimeout);
+
+  EXPECT_EQ(issued_.size(), 3u) << "the new start was not timed out";
+  EXPECT_TRUE(handler_->errors.empty());
+}
+
 TEST_F(MxaRsiStart, AcknowledgedStartIsNotTimedOut)
 {
   StartRsi();
