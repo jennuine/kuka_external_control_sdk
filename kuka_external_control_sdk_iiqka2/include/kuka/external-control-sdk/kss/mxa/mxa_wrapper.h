@@ -280,11 +280,11 @@ public:
 
   bool isServerActive() const { return mxa_aut_ext_.PRO_ACT; }
 
-  // The start command was echoed by the KRC, but no order state was reported.
+  // The start command is raised, but no order state was reported.
   // A command the dispatcher drops stays here without an ABORTED
   bool rsiStartUnacknowledged() const
   {
-    return mxa_tech_function_m_.BUSY && !mxa_tech_function_m_.ACTIVE &&
+    return mxa_tech_function_m_.EXECUTECMD && !mxa_tech_function_m_.ACTIVE &&
            !mxa_tech_function_m_.DONE && !mxa_tech_function_m_.ABORTED;
   }
 

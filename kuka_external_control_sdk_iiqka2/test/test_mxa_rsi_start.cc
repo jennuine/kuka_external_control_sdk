@@ -14,8 +14,10 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #define private public
@@ -82,14 +84,14 @@ protected:
 
   void StartRsi() { client_.StartRSI(ControlMode::JOINT_POSITION_CONTROL, CycleTime::RSI_4MS); }
 
-  // One keep-alive cycle, with the KRC echoing every new command
+  // One keep-alive cycle, with the KRC echoing every new command unless echo_ is off
   void Cycle()
   {
     client_.mxa_wrapper_.mxa_aut_ext_.OnCycle();
     client_.HandleRsiStart();
 
     auto & group = KRC_AXISGROUPREFARR[kAxisGroup];
-    if (group.COMMAND.ORDERID != 0 && group.COMMAND.ORDERID != group.CMDSTATE.ORDERIDRET)
+    if (echo_ && group.COMMAND.ORDERID != 0 && group.COMMAND.ORDERID != group.CMDSTATE.ORDERIDRET)
     {
       EXPECT_EQ(group.COMMAND.COMMANDID, kTechFunctionCmdId);
       issued_.push_back(group.COMMAND.ORDERID);
@@ -116,6 +118,7 @@ protected:
   Client client_{"127.0.0.1", 1};
   RecordingEventHandler * handler_ = nullptr;
   std::vector<int> issued_;
+  bool echo_ = true;
 };
 
 TEST_F(MxaRsiStart, RunningDispatcherGetsOneStartCommand)
@@ -159,6 +162,60 @@ TEST_F(MxaRsiStart, AbortedStartIsReissuedOnce)
   EXPECT_EQ(issued_[1], issued_[0] + 1);
   EXPECT_TRUE(client_.start_rsi_);
   EXPECT_TRUE(handler_->errors.empty());
+}
+
+TEST_F(MxaRsiStart, ConfirmationDuringTheBackoffEndsTheStart)
+{
+  StartRsi();
+  Cycles(5);
+  ASSERT_EQ(issued_.size(), 1u);
+
+  ReportOrderState(issued_[0], kOrderStateAborted);
+  Cycles(10);
+  client_.ConfirmRsiStart();
+  Cycles(kBackoff + 10);
+
+  EXPECT_EQ(issued_.size(), 1u) << "re-issued against a running session";
+  EXPECT_FALSE(client_.start_rsi_);
+  EXPECT_TRUE(handler_->errors.empty());
+}
+
+TEST_F(MxaRsiStart, CancelStopsAPendingRetry)
+{
+  StartRsi();
+  Cycles(5);
+  ASSERT_EQ(issued_.size(), 1u);
+  ReportOrderState(issued_[0], kOrderStateAborted);
+  Cycles(10);
+
+  // CancelRSI waits for the keep-alive thread, which this test stands in for
+  std::thread cancel([this] { client_.CancelRSI(); });
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!client_.cancel_requested_ && std::chrono::steady_clock::now() < deadline)
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  const bool cancel_requested = client_.cancel_requested_;
+  if (cancel_requested)
+  {
+    Cycles(kBackoff + 10);
+  }
+  client_.SetToCancelled();
+  cancel.join();
+
+  ASSERT_TRUE(cancel_requested);
+  EXPECT_EQ(issued_.size(), 1u) << "re-issued after the cancel";
+}
+
+TEST_F(MxaRsiStart, UnechoedStartIsTimedOut)
+{
+  echo_ = false;
+  StartRsi();
+  Cycles(kTimeout * (Client::kMaxRsiStartRetries + 1));
+
+  EXPECT_FALSE(client_.start_rsi_);
+  ASSERT_EQ(handler_->errors.size(), 1u);
+  EXPECT_NE(handler_->errors[0].find("not acknowledged"), std::string::npos);
 }
 
 TEST_F(MxaRsiStart, UnacknowledgedStartIsTimedOutAndReissued)

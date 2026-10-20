@@ -111,6 +111,7 @@ Status Client::StartRSI(ControlMode control_mode, CycleTime cycle_time)
 
 Status Client::CancelRSI()
 {
+  start_rsi_ = false;
   // Cancel only works, if program is not active, stop program by MOVE_DISABLE =
   // false Add short sleep to make sure RSI program is stopped gracefully
   // TODO(Svastits): consider using state variable instead of hard-coded sleep
@@ -388,6 +389,12 @@ void Client::HandleRsiStart()
   // No edge until the backoff after a failed attempt has run out
   if (rsi_start_hold_cycles_ > 0)
   {
+    if (rsi_start_confirmed_)
+    {
+      start_rsi_ = false;
+      rsi_start_hold_cycles_ = 0;
+      return;
+    }
     rsi_start_hold_cycles_--;
     return;
   }
