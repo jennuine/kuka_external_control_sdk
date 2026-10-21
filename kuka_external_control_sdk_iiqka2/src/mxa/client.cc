@@ -272,6 +272,10 @@ void Client::StartKeepAliveThread()
             udp_subscriber_->GetMessage().second);
 
           connected = true;
+          if (status_update_handler_ != nullptr)
+          {
+            status_update_handler_->OnTelegramReceived();
+          }
         }
         else if (tick > kInitTimeoutTicks && connected)
         {
