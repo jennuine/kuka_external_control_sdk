@@ -46,7 +46,7 @@ struct StatusUpdate
            std::tie(
              other.control_mode_, other.cycle_time_, other.drives_powered_, other.emergency_stop_,
              other.guard_stop_, other.in_motion_, other.motion_possible_, other.operation_mode_,
-             robot_stopped_);
+             other.robot_stopped_);
   }
 
   bool operator!=(const StatusUpdate & other) const noexcept { return !(*this == other); }
