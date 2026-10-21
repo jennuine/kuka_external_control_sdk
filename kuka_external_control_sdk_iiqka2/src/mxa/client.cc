@@ -90,6 +90,11 @@ Status Client::RegisterEventHandler(std::unique_ptr<EventHandler> && event_handl
 
 Status Client::StartRSI(ControlMode control_mode, CycleTime cycle_time)
 {
+  if (cancel_requested_)
+  {
+    return {ReturnCode::ERROR, "RSI program cancel still in progress"};
+  }
+
   control_mode_ = control_mode;
   cycle_time_ = cycle_time;
   rsi_started_notification_sent_ = false;
@@ -111,19 +116,47 @@ Status Client::StartRSI(ControlMode control_mode, CycleTime cycle_time)
 
 Status Client::CancelRSI()
 {
-  start_rsi_ = false;
-  // Cancel only works, if program is not active, stop program by MOVE_DISABLE =
-  // false Add short sleep to make sure RSI program is stopped gracefully
-  // TODO(Svastits): consider using state variable instead of hard-coded sleep
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  mxa_wrapper_.moveDisable();
-  cancelled_ = false;
-  cancel_requested_ = true;
+  RequestRsiCancel();
 
   std::unique_lock<std::mutex> cancel_lock(cancel_finished_mutex_);
-  cancel_finished_cv_.wait(cancel_lock, [this] { return cancelled_; });
-  ResetRSI();
+  cancel_finished_cv_.wait(cancel_lock, [this] { return cancelled_.load(); });
+  return {ReturnCode::OK, "RSI program cancelled"};
+}
+
+Status Client::RequestRsiCancel()
+{
+  // No new start edge from now on, the keep-alive thread does the rest
+  start_rsi_ = false;
+  cancelled_ = false;
+  rsi_cancel_hold_cycles_ = kRsiCancelHoldCycles;
+  cancel_requested_ = true;
   return {ReturnCode::OK, "RSI program cancel requested"};
+}
+
+bool Client::IsRsiCancelled() const { return cancelled_; }
+
+void Client::HandleRsiCancel()
+{
+  if (!cancel_requested_)
+  {
+    return;
+  }
+
+  // Cancel only works once the program is stopped, by MOVE_ENABLE = false
+  // after the RSI program has ended
+  if (rsi_cancel_hold_cycles_ > 0)
+  {
+    rsi_cancel_hold_cycles_--;
+    return;
+  }
+  mxa_wrapper_.moveDisable();
+
+  if (mxa_wrapper_.cancelProgram().block_state == BLOCKSTATE::DONE)
+  {
+    // Reset before reporting, so a start may follow at once
+    ResetRSI();
+    SetToCancelled();
+  }
 }
 
 void Client::SetToCancelled()
@@ -318,16 +351,8 @@ void Client::StartKeepAliveThread()
 
           // ----------------------------------------------------------------------------
           HandleRsiStart();
+          HandleRsiCancel();
           // ----------------------------------------------------------------------------
-          if (cancel_requested_)
-          {
-            auto cancel_result = mxa_wrapper_.cancelProgram();
-
-            if (cancel_result.block_state == BLOCKSTATE::DONE)
-            {
-              SetToCancelled();
-            }
-          }
 
           // Before writing the output buffer, send status update
           if (status_update_handler_ != nullptr)

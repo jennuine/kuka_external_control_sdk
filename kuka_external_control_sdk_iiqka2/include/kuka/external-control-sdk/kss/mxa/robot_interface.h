@@ -51,6 +51,10 @@ public:
 
   Status CancelRsiProgram() override;
 
+  Status RequestRsiProgramCancel() override;
+
+  bool IsRsiProgramCancelled() override;
+
   Status RegisterEventHandlerExtension(std::unique_ptr<IEventHandlerExtension> && extension);
 
   Status RegisterStatusResponseHandler(std::unique_ptr<IStatusUpdateHandler> && handler);
