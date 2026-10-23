@@ -49,6 +49,8 @@ public:
 
   Status SetCycleTime(CycleTime cycle_time) override;
 
+  // Blocks until the controller confirms the cancel; needs the mxA link up.
+  // Use RequestRsiProgramCancel()/IsRsiProgramCancelled() if the link may drop
   Status CancelRsiProgram() override;
 
   Status RequestRsiProgramCancel() override;

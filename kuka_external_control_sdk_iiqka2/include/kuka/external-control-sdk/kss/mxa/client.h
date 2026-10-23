@@ -50,7 +50,9 @@ public:
   // Starts RSI program
   Status StartRSI(ControlMode control_mode, CycleTime cycle_time);
 
-  // Cancels RSI program and calls ResetRSI, blocking until the cancel is done
+  // Cancels RSI program and calls ResetRSI, blocking until the cancel is
+  // done. Blocks without a bound, so the mxA link must stay up; if the link
+  // may drop, use RequestRsiCancel()/IsRsiCancelled() instead
   Status CancelRSI();
 
   // Starts the cancel on the keep-alive thread and returns at once. Poll
