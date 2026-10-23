@@ -68,7 +68,8 @@ public:
   virtual void OnStatusUpdateReceived(const StatusUpdate & response) = 0;
 
   // The mxA client calls this on its keep-alive thread for every received
-  // telegram, before the status update and whether or not the status changed
+  // telegram, before the status update and whether or not the status changed.
+  // Runs on the keep-alive thread: must not block or throw
   virtual void OnTelegramReceived() {}
 };
 
