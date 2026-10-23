@@ -38,10 +38,7 @@ Client::Client(const std::string & controller_ip, int client_port)
 
 Client::~Client()
 {
-  // Request the cancel while the keep-alive thread is still running, so it
-  // gets cycles to drive it to completion; wait_for is bounded because
-  // cancelled_ only ever flips while the mxA link is up (connected), which
-  // may never happen again, e.g. with the link down
+  // Request the cancel and wait, bounded, since the link may never come up
   if (rsi_started_)
   {
     RequestRsiCancel();
@@ -50,8 +47,7 @@ Client::~Client()
       cancel_lock, kDestructorCancelTimeout, [this] { return cancelled_.load(); });
   }
 
-  // Joinable regardless of the cancel outcome: the loop's own receive timeout
-  // bounds one more iteration once stop_requested_ is observed
+  // Joined regardless of the cancel outcome; the receive timeout bounds the join
   stop_requested_ = true;
 
   if (keep_alive_thread_.joinable())
