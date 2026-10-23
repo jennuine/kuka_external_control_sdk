@@ -141,8 +141,10 @@ if(BUILD_TESTING)
   include(GoogleTest)
   gtest_discover_tests(test_iiqka2_message_builder)
   gtest_discover_tests(test_eki_client_parsing)
-  gtest_discover_tests(test_mxa_rsi_start)
-  gtest_discover_tests(test_mxa_telegram_hook)
+  # Both binaries can start a real Client bound to the mxA client's fixed send
+  # port, so they share a lock to keep ctest from running them at once
+  gtest_discover_tests(test_mxa_rsi_start PROPERTIES RESOURCE_LOCK mxa_udp_send_port)
+  gtest_discover_tests(test_mxa_telegram_hook PROPERTIES RESOURCE_LOCK mxa_udp_send_port)
 endif()
 
 install(TARGETS ${target_name} EXPORT SdkExport

@@ -12,7 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <arpa/inet.h>
 #include <gtest/gtest.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <atomic>
 #include <chrono>
@@ -32,6 +36,23 @@ using os::core::udp::communication::SocketAddress;
 namespace
 {
 
+// Binds an ephemeral UDP port and hands it back, so parallel test binaries
+// cannot collide on a fixed port
+int GetEphemeralUdpPort()
+{
+  int fd = socket(AF_INET, SOCK_DGRAM, 0);
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  addr.sin_port = 0;
+  bind(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
+  socklen_t len = sizeof(addr);
+  getsockname(fd, reinterpret_cast<sockaddr *>(&addr), &len);
+  int port = ntohs(addr.sin_port);
+  close(fd);
+  return port;
+}
+
 class CountingStatusHandler : public IStatusUpdateHandler
 {
 public:
@@ -46,7 +67,7 @@ public:
 // the status never changes after the first one
 TEST(MxaTelegramHook, StampsEveryTelegram)
 {
-  constexpr int kClientPort = 17336;
+  const int kClientPort = GetEphemeralUdpPort();
   constexpr int kTelegrams = 20;
   constexpr int kTelegramSize = 256;
 

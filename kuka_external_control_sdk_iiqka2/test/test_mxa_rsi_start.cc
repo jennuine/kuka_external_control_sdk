@@ -12,7 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <arpa/inet.h>
 #include <gtest/gtest.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <chrono>
 #include <memory>
@@ -31,6 +35,23 @@ using kuka::external::control::kss::mxa::Client;
 
 namespace
 {
+
+// Binds an ephemeral UDP port and hands it back, so parallel test binaries
+// cannot collide on a fixed port
+int GetEphemeralUdpPort()
+{
+  int fd = socket(AF_INET, SOCK_DGRAM, 0);
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  addr.sin_port = 0;
+  bind(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr));
+  socklen_t len = sizeof(addr);
+  getsockname(fd, reinterpret_cast<sockaddr *>(&addr), &len);
+  int port = ntohs(addr.sin_port);
+  close(fd);
+  return port;
+}
 
 class RecordingEventHandler : public EventHandler
 {
@@ -418,7 +439,7 @@ TEST_F(MxaRsiStart, DoneEndsTheStart)
 TEST(MxaClientDestruction, DestructorDoesNotHangWithTheLinkDown)
 {
   // TEST-NET-1 (RFC 5737): routable syntax, guaranteed unreachable here
-  auto client = std::make_unique<Client>("203.0.113.1", 15336);
+  auto client = std::make_unique<Client>("203.0.113.1", GetEphemeralUdpPort());
   ASSERT_EQ(client->Setup().return_code, kuka::external::control::ReturnCode::OK);
   client->StartRSI(ControlMode::JOINT_POSITION_CONTROL, CycleTime::RSI_4MS);
 
