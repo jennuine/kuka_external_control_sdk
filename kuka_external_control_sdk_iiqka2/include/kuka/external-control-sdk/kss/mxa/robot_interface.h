@@ -55,7 +55,7 @@ public:
 
   Status RequestRsiProgramCancel() override;
 
-  bool IsRsiProgramCancelled() override;
+  bool IsRsiProgramCancelled() const override;
 
   Status RegisterEventHandlerExtension(std::unique_ptr<IEventHandlerExtension> && extension);
 

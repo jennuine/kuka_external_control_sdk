@@ -80,7 +80,7 @@ Status Robot::RequestRsiProgramCancel()
   return cancel_rsi_ret;
 }
 
-bool Robot::IsRsiProgramCancelled() { return client_.IsRsiCancelled(); }
+bool Robot::IsRsiProgramCancelled() const { return client_.IsRsiCancelled(); }
 
 Status Robot::SendControlSignal()
 {
