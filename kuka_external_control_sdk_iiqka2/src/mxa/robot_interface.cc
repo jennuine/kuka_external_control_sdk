@@ -70,6 +70,18 @@ Status Robot::CancelRsiProgram()
   return cancel_rsi_ret;
 }
 
+Status Robot::RequestRsiProgramCancel()
+{
+  Status cancel_rsi_ret = client_.RequestRsiCancel();
+  if (cancel_rsi_ret.return_code == ReturnCode::OK)
+  {
+    rsi_running_ = false;
+  }
+  return cancel_rsi_ret;
+}
+
+bool Robot::IsRsiProgramCancelled() { return client_.IsRsiCancelled(); }
+
 Status Robot::SendControlSignal()
 {
   return kuka::external::control::kss::rsi::Robot::SendControlSignal();

@@ -49,6 +49,8 @@ class MxaRsiStart : public ::testing::Test
 protected:
   static constexpr int kAxisGroup = 1;
   static constexpr int kTechFunctionCmdId = 35;
+  static constexpr int kTechFunctionStart = 2;
+  static constexpr int kTechFunctionCancel = 3;
   static constexpr int kOrderStateActive = 5;
   static constexpr int kOrderStateDone = 6;
   static constexpr int kOrderStateAborted = 8;
@@ -89,12 +91,21 @@ protected:
   {
     client_.mxa_wrapper_.mxa_aut_ext_.OnCycle();
     client_.HandleRsiStart();
+    client_.HandleRsiCancel();
 
     auto & group = KRC_AXISGROUPREFARR[kAxisGroup];
     if (echo_ && group.COMMAND.ORDERID != 0 && group.COMMAND.ORDERID != group.CMDSTATE.ORDERIDRET)
     {
       EXPECT_EQ(group.COMMAND.COMMANDID, kTechFunctionCmdId);
-      issued_.push_back(group.COMMAND.ORDERID);
+      if (group.COMMAND.CMDPARINT[41] == kTechFunctionCancel)
+      {
+        cancels_.push_back(group.COMMAND.ORDERID);
+      }
+      else
+      {
+        EXPECT_EQ(group.COMMAND.CMDPARINT[41], kTechFunctionStart);
+        issued_.push_back(group.COMMAND.ORDERID);
+      }
       group.CMDSTATE.ORDERIDRET = group.COMMAND.ORDERID;
       group.CMDSTATE.CMDIDRET = group.COMMAND.COMMANDID;
     }
@@ -118,6 +129,7 @@ protected:
   Client client_{"127.0.0.1", 1};
   RecordingEventHandler * handler_ = nullptr;
   std::vector<int> issued_;
+  std::vector<int> cancels_;
   bool echo_ = true;
 };
 
@@ -188,6 +200,77 @@ TEST_F(MxaRsiStart, CancelStopsAPendingRetry)
   ReportOrderState(issued_[0], kOrderStateAborted);
   Cycles(10);
 
+  client_.RequestRsiCancel();
+  Cycles(kBackoff + 10);
+
+  EXPECT_EQ(issued_.size(), 1u) << "re-issued after the cancel";
+  EXPECT_EQ(cancels_.size(), 1u);
+  EXPECT_TRUE(client_.IsRsiCancelled());
+}
+
+TEST_F(MxaRsiStart, CancelRequestReturnsImmediately)
+{
+  // No link: the client was never set up, so no keep-alive thread runs
+  StartRsi();
+
+  const auto before = std::chrono::steady_clock::now();
+  const auto status = client_.RequestRsiCancel();
+  const auto elapsed = std::chrono::steady_clock::now() - before;
+
+  EXPECT_EQ(status.return_code, kuka::external::control::ReturnCode::OK);
+  EXPECT_LT(elapsed, std::chrono::milliseconds(1));
+  EXPECT_FALSE(client_.start_rsi_);
+  EXPECT_TRUE(client_.cancel_requested_);
+  EXPECT_FALSE(client_.IsRsiCancelled());
+}
+
+TEST_F(MxaRsiStart, CancelIsFinishedByTheKeepAliveThread)
+{
+  StartRsi();
+  Cycles(5);
+  ASSERT_EQ(issued_.size(), 1u);
+
+  client_.RequestRsiCancel();
+  Cycles(Client::kRsiCancelHoldCycles - 1);
+  EXPECT_TRUE(cancels_.empty()) << "cancelled inside the hold";
+  EXPECT_FALSE(client_.IsRsiCancelled());
+  Cycles(5);
+
+  ASSERT_EQ(cancels_.size(), 1u);
+  EXPECT_TRUE(client_.IsRsiCancelled());
+  EXPECT_FALSE(client_.cancel_requested_);
+  EXPECT_FALSE(client_.rsi_started_);
+  EXPECT_FALSE(KRC_AXISGROUPREFARR[kAxisGroup].AUTEXTCONTROL.MOVE_ENABLE);
+
+  Cycles(50);
+  EXPECT_EQ(cancels_.size(), 1u) << "cancel re-issued after it was done";
+}
+
+TEST_F(MxaRsiStart, StartDuringACancelIsRefused)
+{
+  StartRsi();
+  Cycles(5);
+  ASSERT_EQ(issued_.size(), 1u);
+  client_.RequestRsiCancel();
+
+  const auto refused = client_.StartRSI(ControlMode::JOINT_POSITION_CONTROL, CycleTime::RSI_4MS);
+  EXPECT_EQ(refused.return_code, kuka::external::control::ReturnCode::ERROR);
+  Cycles(Client::kRsiCancelHoldCycles + 5);
+  ASSERT_TRUE(client_.IsRsiCancelled());
+  EXPECT_EQ(issued_.size(), 1u);
+
+  const auto accepted = client_.StartRSI(ControlMode::JOINT_POSITION_CONTROL, CycleTime::RSI_4MS);
+  EXPECT_EQ(accepted.return_code, kuka::external::control::ReturnCode::OK);
+  Cycles(5);
+  EXPECT_EQ(issued_.size(), 2u);
+}
+
+TEST_F(MxaRsiStart, BlockingCancelWaitsForTheKeepAliveThread)
+{
+  StartRsi();
+  Cycles(5);
+  ASSERT_EQ(issued_.size(), 1u);
+
   // CancelRSI waits for the keep-alive thread, which this test stands in for
   std::thread cancel([this] { client_.CancelRSI(); });
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -198,13 +281,18 @@ TEST_F(MxaRsiStart, CancelStopsAPendingRetry)
   const bool cancel_requested = client_.cancel_requested_;
   if (cancel_requested)
   {
-    Cycles(kBackoff + 10);
+    Cycles(Client::kRsiCancelHoldCycles + 5);
   }
-  client_.SetToCancelled();
+  else
+  {
+    client_.SetToCancelled();
+  }
   cancel.join();
 
   ASSERT_TRUE(cancel_requested);
-  EXPECT_EQ(issued_.size(), 1u) << "re-issued after the cancel";
+  EXPECT_EQ(cancels_.size(), 1u);
+  EXPECT_TRUE(client_.IsRsiCancelled());
+  EXPECT_FALSE(client_.rsi_started_);
 }
 
 TEST_F(MxaRsiStart, UnechoedStartIsTimedOut)
@@ -323,6 +411,24 @@ TEST_F(MxaRsiStart, DoneEndsTheStart)
   EXPECT_EQ(issued_.size(), 1u);
   EXPECT_FALSE(client_.start_rsi_);
   EXPECT_TRUE(handler_->errors.empty());
+}
+
+// Uses a real Client with the keep-alive thread, pointed at an address that
+// never answers, so connected_ never becomes true
+TEST(MxaClientDestruction, DestructorDoesNotHangWithTheLinkDown)
+{
+  // TEST-NET-1 (RFC 5737): routable syntax, guaranteed unreachable here
+  auto client = std::make_unique<Client>("203.0.113.1", 15336);
+  ASSERT_EQ(client->Setup().return_code, kuka::external::control::ReturnCode::OK);
+  client->StartRSI(ControlMode::JOINT_POSITION_CONTROL, CycleTime::RSI_4MS);
+
+  const auto before = std::chrono::steady_clock::now();
+  client.reset();
+  const auto elapsed = std::chrono::steady_clock::now() - before;
+
+  // Well under the old behavior (hangs forever); well over the destructor's
+  // own 1 s cancel-wait bound plus one keep-alive receive timeout
+  EXPECT_LT(elapsed, std::chrono::seconds(3));
 }
 
 TEST_F(MxaRsiStart, StoppedDispatcherIsStartedBeforeTheCommand)

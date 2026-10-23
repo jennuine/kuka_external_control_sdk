@@ -66,6 +66,10 @@ class IStatusUpdateHandler
 {
 public:
   virtual void OnStatusUpdateReceived(const StatusUpdate & response) = 0;
+
+  // The mxA client calls this on its keep-alive thread for every received
+  // telegram, before the status update and whether or not the status changed
+  virtual void OnTelegramReceived() {}
 };
 
 }  // namespace kuka::external::control::kss

@@ -1,0 +1,79 @@
+// Copyright 2026 KUKA Hungaria Kft.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include <gtest/gtest.h>
+
+#include <atomic>
+#include <chrono>
+#include <memory>
+#include <thread>
+
+#include "kuka/external-control-sdk/kss/mxa/client.h"
+#include "kuka/external-control-sdk/utils/os-core-udp-communication/publisher.h"
+
+using kuka::external::control::ReturnCode;
+using kuka::external::control::kss::IStatusUpdateHandler;
+using kuka::external::control::kss::StatusUpdate;
+using kuka::external::control::kss::mxa::Client;
+using os::core::udp::communication::Publisher;
+using os::core::udp::communication::SocketAddress;
+
+namespace
+{
+
+class CountingStatusHandler : public IStatusUpdateHandler
+{
+public:
+  void OnStatusUpdateReceived(const StatusUpdate &) override { status_updates++; }
+  void OnTelegramReceived() override { telegrams++; }
+
+  std::atomic<int> status_updates{0};
+  std::atomic<int> telegrams{0};
+};
+
+// Feeds the live keep-alive thread over loopback with identical telegrams, so
+// the status never changes after the first one
+TEST(MxaTelegramHook, StampsEveryTelegram)
+{
+  constexpr int kClientPort = 17336;
+  constexpr int kTelegrams = 20;
+  constexpr int kTelegramSize = 256;
+
+  Client client("127.0.0.1", kClientPort);
+  auto handler = std::make_unique<CountingStatusHandler>();
+  auto * counts = handler.get();
+  client.RegisterStatusUpdateHandler(std::move(handler));
+  ASSERT_EQ(client.Setup().return_code, ReturnCode::OK);
+
+  Publisher sender(SocketAddress("127.0.0.1", kClientPort), SocketAddress(), false);
+  ASSERT_EQ(sender.Setup(), Publisher::ErrorCode::kSuccess);
+  const uint8_t telegram[kTelegramSize] = {};
+  for (int i = 0; i < kTelegrams; i++)
+  {
+    ASSERT_EQ(sender.Send(telegram, kTelegramSize), Publisher::ErrorCode::kSuccess);
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (counts->telegrams < kTelegrams && std::chrono::steady_clock::now() < deadline)
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  // Let anything still queued arrive, so a surplus call would show up
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+  EXPECT_EQ(counts->telegrams, kTelegrams);
+  EXPECT_LE(counts->status_updates, 1);
+}
+
+}  // namespace
