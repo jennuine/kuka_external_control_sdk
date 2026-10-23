@@ -37,6 +37,8 @@ public:
 
   Status SendControlSignal() override;
 
+  Status ReceiveMotionState(std::chrono::milliseconds receive_request_timeout) override;
+
   Status SwitchControlMode(ControlMode control_mode) override;
 
   Status RegisterEventHandler(std::unique_ptr<EventHandler> && event_handler) override;

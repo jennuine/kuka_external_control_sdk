@@ -56,6 +56,10 @@ public:
   // Reset class to be able to start RSI again
   void ResetRSI();
 
+  // Marks the start as taken. The first RSI packet is the only report of a
+  // successful start, so this is what disarms the start timeout
+  void ConfirmRsiStart();
+
   // Turn on drives
   void TurnOnDrives();
 
@@ -72,6 +76,12 @@ public:
 private:
   // Start keep-alive thread
   void StartKeepAliveThread();
+
+  // One keep-alive cycle of the dispatcher start and the RSI start command
+  void HandleRsiStart();
+
+  // Count a failed start attempt: re-issue after the backoff, or report
+  void RetryRsiStart(const std::string & reason);
 
   std::optional<int> CheckRosRuntimeVersion(mxAWrapper::VersionResult & version_result);
 
@@ -111,6 +121,16 @@ private:
 
   std::atomic<bool> start_cmd_dispatcher_{false};
   std::atomic<bool> start_rsi_{false};
+  std::atomic<int> rsi_start_retries_{0};
+  static constexpr int kMaxRsiStartRetries = 3;
+  // Both counts are keep-alive cycles, one per mxA status packet, about 4 ms
+  // Wait after a failed attempt, so the re-issue clears the dispatcher restart
+  static constexpr int kRsiStartBackoffCycles = 100;
+  // A start neither reported nor confirmed by then counts as a dropped attempt
+  static constexpr int kRsiStartAckTimeoutCycles = 500;
+  std::atomic<int> rsi_start_hold_cycles_{0};
+  std::atomic<int> rsi_start_pending_cycles_{0};
+  std::atomic<bool> rsi_start_confirmed_{false};
   std::atomic<bool> rsi_started_{false};
   std::atomic<bool> rsi_started_notification_sent_{false};
   std::atomic<bool> connected_notification_sent_{false};

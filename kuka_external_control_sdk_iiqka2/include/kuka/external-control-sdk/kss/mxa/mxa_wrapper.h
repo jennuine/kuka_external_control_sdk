@@ -132,10 +132,6 @@ public:
   {
     mxa_aut_ext_.MOVE_ENABLE = true;
 
-    // Reset execute flag for every new sever start, as after cancel it might
-    // not get reset
-    mxa_tech_function_m_.EXECUTECMD = false;
-    mxa_tech_function_m_.OnCycle();
     if (mxa_auto_start_.RESETVALID)
     {
       mxa_auto_start_.EXECUTERESET = true;
@@ -148,7 +144,9 @@ public:
       mxa_auto_start_.OnCycle();
       return BLOCKRESULT(BLOCKSTATE(mxa_auto_start_.ERRORID));
     }
-    else if (mxa_auto_start_.DONE)
+    // The reset only runs while the dispatcher is stopped, so a running
+    // dispatcher with no reset in flight is already started
+    else if (mxa_auto_start_.DONE || (!mxa_auto_start_.EXECUTERESET && mxa_auto_start_.DISPACTIVE))
     {
       mxa_auto_start_.EXECUTERESET = false;
       mxa_auto_start_.OnCycle();
@@ -159,6 +157,13 @@ public:
       return BLOCKRESULT(BLOCKSTATE(BLOCKSTATE::DONE));
     }
     return BLOCKRESULT(BLOCKSTATE(BLOCKSTATE::ACTIVE));
+  }
+
+  // Drop the execute flag so the next processRSI call makes a new rising edge
+  void resetRSI()
+  {
+    mxa_tech_function_m_.EXECUTECMD = false;
+    mxa_tech_function_m_.OnCycle();
   }
 
   // Only works with Techfunction extension
@@ -256,20 +261,32 @@ public:
 
     if (mxa_tech_function_m_.ERROR)
     {
-      mxa_tech_function_m_.EXECUTECMD = false;
-      mxa_tech_function_m_.OnCycle();
-      return BLOCKRESULT(BLOCKSTATE(mxa_tech_function_m_.ERRORID));
+      const int error_id = static_cast<int>(mxa_tech_function_m_.ERRORID);
+      resetRSI();
+      return BLOCKRESULT(error_id);
     }
     else if (mxa_tech_function_m_.DONE)
     {
-      mxa_tech_function_m_.EXECUTECMD = false;
-      mxa_tech_function_m_.OnCycle();
+      resetRSI();
       return BLOCKRESULT(BLOCKSTATE(BLOCKSTATE::DONE));
+    }
+    else if (mxa_tech_function_m_.ABORTED)
+    {
+      resetRSI();
+      return BLOCKRESULT(BLOCKSTATE(BLOCKSTATE::ABORTED));
     }
     return BLOCKRESULT(BLOCKSTATE(BLOCKSTATE::ACTIVE));
   }
 
   bool isServerActive() const { return mxa_aut_ext_.PRO_ACT; }
+
+  // The start command is raised, but no order state was reported.
+  // A command the dispatcher drops stays here without an ABORTED
+  bool rsiStartUnacknowledged() const
+  {
+    return mxa_tech_function_m_.EXECUTECMD && !mxa_tech_function_m_.ACTIVE &&
+           !mxa_tech_function_m_.DONE && !mxa_tech_function_m_.ABORTED;
+  }
 
   bool drivesPowered() const { return mxa_aut_ext_.PERI_RDY; }
 
