@@ -413,6 +413,24 @@ TEST_F(MxaRsiStart, DoneEndsTheStart)
   EXPECT_TRUE(handler_->errors.empty());
 }
 
+// Uses a real Client with the keep-alive thread, pointed at an address that
+// never answers, so connected_ never becomes true
+TEST(MxaClientDestruction, DestructorDoesNotHangWithTheLinkDown)
+{
+  // TEST-NET-1 (RFC 5737): routable syntax, guaranteed unreachable here
+  auto client = std::make_unique<Client>("203.0.113.1", 15336);
+  ASSERT_EQ(client->Setup().return_code, kuka::external::control::ReturnCode::OK);
+  client->StartRSI(ControlMode::JOINT_POSITION_CONTROL, CycleTime::RSI_4MS);
+
+  const auto before = std::chrono::steady_clock::now();
+  client.reset();
+  const auto elapsed = std::chrono::steady_clock::now() - before;
+
+  // Well under the old behavior (hangs forever); well over the destructor's
+  // own 1 s cancel-wait bound plus one keep-alive receive timeout
+  EXPECT_LT(elapsed, std::chrono::seconds(3));
+}
+
 TEST_F(MxaRsiStart, StoppedDispatcherIsStartedBeforeTheCommand)
 {
   auto & group = KRC_AXISGROUPREFARR[kAxisGroup];

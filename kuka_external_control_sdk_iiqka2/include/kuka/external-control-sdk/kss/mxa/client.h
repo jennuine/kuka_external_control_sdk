@@ -152,6 +152,9 @@ private:
   std::atomic<bool> cancelled_{false};
   std::mutex cancel_finished_mutex_;
   std::condition_variable cancel_finished_cv_;
+  // Upper bound on the destructor's cancel wait, so a down mxA link cannot
+  // block destruction forever
+  static constexpr std::chrono::milliseconds kDestructorCancelTimeout{1000};
 
   void SetToCancelled();
 
