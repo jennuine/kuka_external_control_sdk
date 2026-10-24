@@ -50,8 +50,17 @@ public:
   // Starts RSI program
   Status StartRSI(ControlMode control_mode, CycleTime cycle_time);
 
-  // Cancels RSI program and calls ResetRSI
+  // Cancels RSI program and calls ResetRSI, blocking until the cancel is
+  // done. Blocks without a bound, so the mxA link must stay up; if the link
+  // may drop, use RequestRsiCancel()/IsRsiCancelled() instead
   Status CancelRSI();
+
+  // Starts the cancel on the keep-alive thread and returns at once. Poll
+  // IsRsiCancelled before the next StartRSI
+  Status RequestRsiCancel();
+
+  // True once the requested cancel is done and the client is reset
+  bool IsRsiCancelled() const;
 
   // Reset class to be able to start RSI again
   void ResetRSI();
@@ -82,6 +91,9 @@ private:
 
   // Count a failed start attempt: re-issue after the backoff, or report
   void RetryRsiStart(const std::string & reason);
+
+  // One keep-alive cycle of a requested cancel
+  void HandleRsiCancel();
 
   std::optional<int> CheckRosRuntimeVersion(mxAWrapper::VersionResult & version_result);
 
@@ -135,10 +147,16 @@ private:
   std::atomic<bool> rsi_started_notification_sent_{false};
   std::atomic<bool> connected_notification_sent_{false};
 
+  // Let the RSI program end before the interpreter is stopped, about 50 ms
+  static constexpr int kRsiCancelHoldCycles = 12;
+  std::atomic<int> rsi_cancel_hold_cycles_{0};
   std::atomic<bool> cancel_requested_{false};
-  bool cancelled_{false};
+  std::atomic<bool> cancelled_{false};
   std::mutex cancel_finished_mutex_;
   std::condition_variable cancel_finished_cv_;
+  // Upper bound on the destructor's cancel wait, so a down mxA link cannot
+  // block destruction forever
+  static constexpr std::chrono::milliseconds kDestructorCancelTimeout{1000};
 
   void SetToCancelled();
 
