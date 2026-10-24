@@ -38,12 +38,17 @@ Client::Client(const std::string & controller_ip, int client_port)
 
 Client::~Client()
 {
-  stop_requested_ = true;
-
+  // Request the cancel and wait, bounded, since the link may never come up
   if (rsi_started_)
   {
-    CancelRSI();
+    RequestRsiCancel();
+    std::unique_lock<std::mutex> cancel_lock(cancel_finished_mutex_);
+    cancel_finished_cv_.wait_for(
+      cancel_lock, kDestructorCancelTimeout, [this] { return cancelled_.load(); });
   }
+
+  // Joined regardless of the cancel outcome; the receive timeout bounds the join
+  stop_requested_ = true;
 
   if (keep_alive_thread_.joinable())
   {
@@ -90,14 +95,24 @@ Status Client::RegisterEventHandler(std::unique_ptr<EventHandler> && event_handl
 
 Status Client::StartRSI(ControlMode control_mode, CycleTime cycle_time)
 {
-  // Start CMD dispatcher on first start
-  start_cmd_dispatcher_ = true;
-  start_rsi_ = true;
+  if (cancel_requested_)
+  {
+    return {ReturnCode::ERROR, "RSI program cancel still in progress"};
+  }
 
   control_mode_ = control_mode;
   cycle_time_ = cycle_time;
   rsi_started_notification_sent_ = false;
+  rsi_start_retries_ = 0;
+  rsi_start_hold_cycles_ = 0;
+  rsi_start_pending_cycles_ = 0;
+  rsi_start_confirmed_ = false;
   rsi_started_ = true;
+
+  // Start CMD dispatcher on first start. The keep-alive thread acts on these
+  // flags, so they are set after the counters above are reset
+  start_cmd_dispatcher_ = true;
+  start_rsi_ = true;
 
   return event_handler_set_
            ? Status{ReturnCode::OK, "RSI program start requested"}
@@ -106,18 +121,47 @@ Status Client::StartRSI(ControlMode control_mode, CycleTime cycle_time)
 
 Status Client::CancelRSI()
 {
-  // Cancel only works, if program is not active, stop program by MOVE_DISABLE =
-  // false Add short sleep to make sure RSI program is stopped gracefully
-  // TODO(Svastits): consider using state variable instead of hard-coded sleep
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  mxa_wrapper_.moveDisable();
-  cancelled_ = false;
-  cancel_requested_ = true;
+  RequestRsiCancel();
 
   std::unique_lock<std::mutex> cancel_lock(cancel_finished_mutex_);
-  cancel_finished_cv_.wait(cancel_lock, [this] { return cancelled_; });
-  ResetRSI();
+  cancel_finished_cv_.wait(cancel_lock, [this] { return cancelled_.load(); });
+  return {ReturnCode::OK, "RSI program cancelled"};
+}
+
+Status Client::RequestRsiCancel()
+{
+  // No new start edge from now on, the keep-alive thread does the rest
+  start_rsi_ = false;
+  cancelled_ = false;
+  rsi_cancel_hold_cycles_ = kRsiCancelHoldCycles;
+  cancel_requested_ = true;
   return {ReturnCode::OK, "RSI program cancel requested"};
+}
+
+bool Client::IsRsiCancelled() const { return cancelled_; }
+
+void Client::HandleRsiCancel()
+{
+  if (!cancel_requested_)
+  {
+    return;
+  }
+
+  // Cancel only works once the program is stopped, by MOVE_ENABLE = false
+  // after the RSI program has ended
+  if (rsi_cancel_hold_cycles_ > 0)
+  {
+    rsi_cancel_hold_cycles_--;
+    return;
+  }
+  mxa_wrapper_.moveDisable();
+
+  if (mxa_wrapper_.cancelProgram().block_state == BLOCKSTATE::DONE)
+  {
+    // Reset before reporting, so a start may follow at once
+    ResetRSI();
+    SetToCancelled();
+  }
 }
 
 void Client::SetToCancelled()
@@ -135,6 +179,19 @@ void Client::ResetRSI()
   rsi_started_ = false;
   start_cmd_dispatcher_ = false;
   start_rsi_ = false;
+  rsi_start_hold_cycles_ = 0;
+  rsi_start_pending_cycles_ = 0;
+  rsi_start_confirmed_ = false;
+}
+
+void Client::ConfirmRsiStart()
+{
+  if (rsi_start_confirmed_)
+  {
+    return;
+  }
+  rsi_start_confirmed_ = true;
+  rsi_start_pending_cycles_ = 0;
 }
 
 void Client::TurnOnDrives() { mxa_wrapper_.drivesOn(); }
@@ -220,6 +277,10 @@ void Client::StartKeepAliveThread()
             udp_subscriber_->GetMessage().second);
 
           connected = true;
+          if (status_update_handler_ != nullptr)
+          {
+            status_update_handler_->OnTelegramReceived();
+          }
         }
         else if (tick > kInitTimeoutTicks && connected)
         {
@@ -298,43 +359,9 @@ void Client::StartKeepAliveThread()
           }
 
           // ----------------------------------------------------------------------------
-          // AutoStart - sets existing signals of AutomaticExternal in the correct
-          // sequence - used to activate AutExt block easier...
-          if (start_cmd_dispatcher_)
-          {
-            auto result = mxa_wrapper_.startMxAServer();
-            if (result.block_state == BLOCKSTATE::DONE)
-            {
-              start_cmd_dispatcher_ = false;
-            }
-          }
-
-          // Call program starting RSI
-          if (mxa_wrapper_.isServerActive() && start_rsi_)
-          {
-            auto process_rsi_res = mxa_wrapper_.processRSI(
-              static_cast<int>(control_mode_), static_cast<int>(cycle_time_));
-            if (
-              process_rsi_res.block_state == BLOCKSTATE::ACTIVE && !rsi_started_notification_sent_)
-            {
-              rsi_started_notification_sent_ = true;
-              event_handler_->OnSampling();
-            }
-            if (process_rsi_res.block_state == BLOCKSTATE::DONE)
-            {
-              start_rsi_ = false;
-            }
-          }
+          HandleRsiStart();
+          HandleRsiCancel();
           // ----------------------------------------------------------------------------
-          if (cancel_requested_)
-          {
-            auto cancel_result = mxa_wrapper_.cancelProgram();
-
-            if (cancel_result.block_state == BLOCKSTATE::DONE)
-            {
-              SetToCancelled();
-            }
-          }
 
           // Before writing the output buffer, send status update
           if (status_update_handler_ != nullptr)
@@ -369,6 +396,94 @@ void Client::StartKeepAliveThread()
         }
       }
     });
+}
+
+void Client::HandleRsiStart()
+{
+  // AutoStart - sets existing signals of AutomaticExternal in the correct
+  // sequence - used to activate AutExt block easier...
+  if (start_cmd_dispatcher_)
+  {
+    auto result = mxa_wrapper_.startMxAServer();
+    if (result.block_state != BLOCKSTATE::DONE)
+    {
+      return;
+    }
+    start_cmd_dispatcher_ = false;
+    // New rising edge for the start command, the flag may be left set by a cancel
+    mxa_wrapper_.resetRSI();
+  }
+
+  // Call program starting RSI, once the dispatcher is up
+  if (!mxa_wrapper_.isServerActive() || !start_rsi_)
+  {
+    return;
+  }
+
+  // No edge until the backoff after a failed attempt has run out
+  if (rsi_start_hold_cycles_ > 0)
+  {
+    if (rsi_start_confirmed_)
+    {
+      start_rsi_ = false;
+      rsi_start_hold_cycles_ = 0;
+      return;
+    }
+    rsi_start_hold_cycles_--;
+    return;
+  }
+
+  auto process_rsi_res =
+    mxa_wrapper_.processRSI(static_cast<int>(control_mode_), static_cast<int>(cycle_time_));
+  switch (process_rsi_res.block_state)
+  {
+    case BLOCKSTATE::ACTIVE:
+      if (!rsi_started_notification_sent_)
+      {
+        rsi_started_notification_sent_ = true;
+        event_handler_->OnSampling();
+      }
+      if (rsi_start_confirmed_ || !mxa_wrapper_.rsiStartUnacknowledged())
+      {
+        rsi_start_pending_cycles_ = 0;
+        break;
+      }
+      // The confirmation comes from another thread, so check it again before
+      // acting on the count
+      if (++rsi_start_pending_cycles_ < kRsiStartAckTimeoutCycles || rsi_start_confirmed_)
+      {
+        break;
+      }
+      // Dropped without a report: drop the edge ourselves and retry
+      mxa_wrapper_.resetRSI();
+      RetryRsiStart("not acknowledged by the KRC");
+      break;
+    case BLOCKSTATE::DONE:
+      start_rsi_ = false;
+      rsi_start_pending_cycles_ = 0;
+      break;
+    case BLOCKSTATE::ABORTED:
+      RetryRsiStart("aborted by the KRC");
+      break;
+    case BLOCKSTATE::ERROR:
+      RetryRsiStart("failed with error ID " + std::to_string(process_rsi_res.error_code));
+      break;
+  }
+}
+
+// The execute flag is already dropped; the next edge is raised after the backoff
+void Client::RetryRsiStart(const std::string & reason)
+{
+  rsi_start_pending_cycles_ = 0;
+  if (rsi_start_retries_ < kMaxRsiStartRetries)
+  {
+    rsi_start_retries_++;
+    rsi_start_hold_cycles_ = kRsiStartBackoffCycles;
+    return;
+  }
+  start_rsi_ = false;
+  event_handler_->OnError(
+    "RSI start command " + reason + " after " + std::to_string(kMaxRsiStartRetries) + " retries");
 }
 
 }  // namespace kuka::external::control::kss::mxa

@@ -70,9 +70,32 @@ Status Robot::CancelRsiProgram()
   return cancel_rsi_ret;
 }
 
+Status Robot::RequestRsiProgramCancel()
+{
+  Status cancel_rsi_ret = client_.RequestRsiCancel();
+  if (cancel_rsi_ret.return_code == ReturnCode::OK)
+  {
+    rsi_running_ = false;
+  }
+  return cancel_rsi_ret;
+}
+
+bool Robot::IsRsiProgramCancelled() const { return client_.IsRsiCancelled(); }
+
 Status Robot::SendControlSignal()
 {
   return kuka::external::control::kss::rsi::Robot::SendControlSignal();
+}
+
+Status Robot::ReceiveMotionState(std::chrono::milliseconds receive_request_timeout)
+{
+  Status ret =
+    kuka::external::control::kss::rsi::Robot::ReceiveMotionState(receive_request_timeout);
+  if (ret.return_code == ReturnCode::OK)
+  {
+    client_.ConfirmRsiStart();
+  }
+  return ret;
 }
 
 Status Robot::SwitchControlMode(ControlMode control_mode)

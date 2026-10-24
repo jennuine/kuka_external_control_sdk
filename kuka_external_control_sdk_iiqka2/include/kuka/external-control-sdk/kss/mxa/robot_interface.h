@@ -37,6 +37,8 @@ public:
 
   Status SendControlSignal() override;
 
+  Status ReceiveMotionState(std::chrono::milliseconds receive_request_timeout) override;
+
   Status SwitchControlMode(ControlMode control_mode) override;
 
   Status RegisterEventHandler(std::unique_ptr<EventHandler> && event_handler) override;
@@ -47,7 +49,13 @@ public:
 
   Status SetCycleTime(CycleTime cycle_time) override;
 
+  // Blocks until the controller confirms the cancel; needs the mxA link up.
+  // Use RequestRsiProgramCancel()/IsRsiProgramCancelled() if the link may drop
   Status CancelRsiProgram() override;
+
+  Status RequestRsiProgramCancel() override;
+
+  bool IsRsiProgramCancelled() const override;
 
   Status RegisterEventHandlerExtension(std::unique_ptr<IEventHandlerExtension> && extension);
 

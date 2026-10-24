@@ -63,6 +63,9 @@ public:
 
   // Extension methods not supported by plain RSI
   virtual Status CancelRsiProgram() { return {ReturnCode::UNSUPPORTED, error_text}; }
+  // Non-blocking form of CancelRsiProgram: request, then poll for completion
+  virtual Status RequestRsiProgramCancel() { return {ReturnCode::UNSUPPORTED, error_text}; }
+  virtual bool IsRsiProgramCancelled() const { return false; }
   virtual Status TurnOnDrives() { return {ReturnCode::UNSUPPORTED, error_text}; }
   virtual Status TurnOffDrives() { return {ReturnCode::UNSUPPORTED, error_text}; }
   virtual Status SetCycleTime(CycleTime cycle_time)
