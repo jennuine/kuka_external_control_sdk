@@ -113,7 +113,6 @@ if(BUILD_TESTING)
 
   target_include_directories(test_status_update PUBLIC
     "$<BUILD_INTERFACE:${iiQKA2_directory}/include>"
-    "$<BUILD_INTERFACE:${iiQKA2_directory}/test>"
   )
 
   target_compile_features(test_iiqka2_message_builder INTERFACE cxx_std_17 PRIVATE cxx_std_17)
